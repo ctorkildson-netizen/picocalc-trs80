@@ -1,0 +1,5 @@
+bench/rom_l2.h
+build*/
+boot_*
+zt
+*.log
