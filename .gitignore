@@ -3,3 +3,6 @@ build*/
 boot_*
 zt
 *.log
+disks
+disks_t
+typetest

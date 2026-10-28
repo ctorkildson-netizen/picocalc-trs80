@@ -1,7 +1,8 @@
-/* m1 -- a TRS-80 Model I on the PicoCalc: first milestone, Level II BASIC on
- * the screen and the keyboard. One core for now: the guest runs a 60 Hz field,
- * the rows of the screen that changed are drawn, the keyboard is read, and the
- * loop waits for the field's deadline. */
+/* trs80 -- a TRS-80 Model I on the PicoCalc: Level II BASIC, the keyboard,
+ * and the Expansion Interface's disk drives, with JV1 and DMK images on the
+ * SD card. One core for now: the guest runs a 60 Hz field, the rows of the
+ * screen that changed are drawn, the keyboard is read, and the loop waits for
+ * the field's deadline. */
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -14,8 +15,9 @@
 #include "m1.h"
 #include "keys.h"
 #include "sha1.h"
+#include "picker.h"
 
-#define VERSION "0.2"
+#define VERSION "0.3"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -25,7 +27,7 @@
 #define C_BG 0x0000
 #define C_DIM 0x8410
 
-static uint8_t machine[70 * 1024] __attribute__((aligned(8)));
+static uint8_t machine[80 * 1024] __attribute__((aligned(8)));
 static m1_t *m = (m1_t *)machine;
 static keys_t keys;
 static uint8_t rom[M1_ROM_SIZE];
@@ -170,13 +172,151 @@ static void screenshot(void)
 	status("Couldn't save the screen");
 }
 
+/* ------------------------------------------------------------ the disks */
+
+#define DRIVES 2			/* drives the menu offers (the controller has 4) */
+#define DRIVES_FILE "/trs80/drives.txt"
+static fat32_file_t dfile[FDC_DRIVES];
+static char dpath[FDC_DRIVES][PICKER_PATH];
+
+static bool d_read(void *c, int d, uint32_t off, void *buf, uint32_t len)
+{
+	(void)c;
+	size_t got = 0;
+	return dfile[d].is_open && fat32_seek(&dfile[d], off) == FAT32_OK &&
+	       fat32_read(&dfile[d], buf, len, &got) == FAT32_OK && got == len;
+}
+
+static bool d_write(void *c, int d, uint32_t off, const void *buf, uint32_t len)
+{
+	(void)c;
+	size_t put = 0;
+	return dfile[d].is_open && fat32_seek(&dfile[d], off) == FAT32_OK &&
+	       fat32_write(&dfile[d], buf, len, &put) == FAT32_OK && put == len;
+}
+static const disk_io_t disk_io = { d_read, d_write, NULL };
+
+static void eject(int d)
+{
+	fdc_eject(m1_fdc(m), d);
+	if (dfile[d].is_open) fat32_close(&dfile[d]);
+	dpath[d][0] = 0;
+}
+
+static bool insert(int d, const char *path)
+{
+	eject(d);
+	if (fat32_open(&dfile[d], path) != FAT32_OK) return false;
+	uint8_t h[16] = { 0 };
+	size_t got = 0;
+	fat32_read(&dfile[d], h, 16, &got);
+	bool wp = (dfile[d].attributes & 0x01) != 0;		/* a read-only file is a protected disk */
+	if (!fdc_insert(m1_fdc(m), d, fat32_size(&dfile[d]), h, wp)) { fat32_close(&dfile[d]); return false; }
+	snprintf(dpath[d], sizeof dpath[d], "%s", path);
+	return true;
+}
+
+/* /trs80/drives.txt: a line per drive, "0 /trs80/disks/newdos.dsk" */
+static void load_drives(void)
+{
+	fat32_file_t f;
+	if (fat32_open(&f, DRIVES_FILE) != FAT32_OK) return;
+	char b[1024];
+	size_t n = 0;
+	fat32_read(&f, b, sizeof b - 1, &n);
+	fat32_close(&f);
+	b[n] = 0;
+	for (char *l = strtok(b, "\r\n"); l; l = strtok(NULL, "\r\n"))
+		if (l[0] >= '0' && l[0] < '0' + DRIVES && l[1] == ' ') insert(l[0] - '0', l + 2);
+}
+
+static void save_drives(void)
+{
+	char b[1024];
+	int n = 0;
+	for (int d = 0; d < DRIVES; d++)
+		if (dpath[d][0]) n += snprintf(b + n, sizeof b - (size_t)n, "%d %s\r\n", d, dpath[d]);
+	fat32_delete(DRIVES_FILE);
+	fat32_file_t f;
+	if (fat32_create(&f, DRIVES_FILE) != FAT32_OK) return;
+	size_t put;
+	fat32_write(&f, b, (size_t)n, &put);
+	fat32_close(&f);
+}
+
+static bool is_disk(const char *name)
+{
+	const char *e = strrchr(name, '.');
+	if (!e) return false;
+	char x[5] = { 0 };
+	for (int i = 0; i < 4 && e[i + 1]; i++) x[i] = (char)(e[i + 1] | 0x20);
+	return !strcmp(x, "dsk") || !strcmp(x, "dmk") || !strcmp(x, "jv1");
+}
+
+static const char *base_name(const char *p) { const char *s = strrchr(p, '/'); return s ? s + 1 : p; }
+
 /* ------------------------------------------------------------ running */
 
-static void reset(void)
+volatile bool user_interrupt;		/* (the keyboard driver sets it on Brk; not used here) */
+static int ram_kb = 48;
+static char title[80];
+
+static void redraw(void)
 {
-	m1_init(m, rom);
+	lcd_clear_screen();
+	lcd_set_foreground(C_DIM);
+	lcd_putstr(0, 0, title);
+	lcd_set_foreground(C_FG);
+	shadow_valid = false;
+}
+
+static void set_title(void)
+{
+	snprintf(title, sizeof title, "TRS-80 Model I %s  %dK  0:%.22s  1:%.22s", VERSION, ram_kb,
+	         dpath[0][0] ? base_name(dpath[0]) : "-", dpath[1][0] ? base_name(dpath[1]) : "-");
+	lcd_set_foreground(C_DIM);
+	char b[65];
+	snprintf(b, sizeof b, "%-64.64s", title);
+	lcd_putstr(0, 0, b);
+	lcd_set_foreground(C_FG);
+}
+
+static void power_on(void)
+{
+	m1_power_on(m, ram_kb);
 	keys_init(&keys);
 	shadow_valid = false;
+}
+
+/* F3, F4: choose the disk for drive 0 or 1 (Esc: leave it; Del: empty it) */
+static void choose(int d)
+{
+	keyboard_set_background_poll(true);
+	static const char *const help[] = { "  Del            empty the drive", NULL };
+	static const picker_style_t style = {
+		.title = "Choose a disk", .filter = is_disk, .noun = "disk", .nouns = "disks",
+		.keys = "\x7F\xD4", .keys_help = help,
+	};
+	static char dir[PICKER_PATH] = "/trs80/disks";
+	fat32_file_t t;
+	if (fat32_open(&t, dir) == FAT32_OK) fat32_close(&t);
+	else strcpy(dir, "/");
+	char path[PICKER_PATH];
+	int r = picker_run(&style, dir, dpath[d][0] ? base_name(dpath[d]) : NULL, path);
+	keyboard_set_background_poll(false);
+	while (keyboard_key_available()) keyboard_get_key();
+	lcd_set_font(&font_5x10);
+	lcd_set_foreground(C_FG);
+	lcd_set_background(C_BG);
+	if (r == PICKER_CHOSEN) {
+		if (!insert(d, path)) eject(d);
+		save_drives();
+	} else if (r == 0x7F || r == 0xD4) {
+		eject(d);
+		save_drives();
+	}
+	redraw();
+	set_title();
 }
 
 int main(void)
@@ -194,14 +334,11 @@ int main(void)
 	char problem[48];
 	if (m1_size() > sizeof machine) no_rom("Internal: the machine doesn't fit");
 	if (!load_rom(problem, sizeof problem)) no_rom(problem);
-	reset();
-
-	char b[80];
-	snprintf(b, sizeof b, "TRS-80 Model I %s   %s, 48K", VERSION, rom_name);
-	lcd_set_foreground(C_DIM);
-	lcd_putstr(0, 0, b);
-	lcd_set_foreground(C_FG);
-	const char *help = "F1 reset  F2 leave  F5 save screen  Esc BREAK  Home CLEAR";
+	m1_init(m, rom, &disk_io);
+	load_drives();
+	power_on();
+	set_title();
+	const char *help = "F1 power on  F2 leave  F3 F4 disks  F5 save screen  Esc BREAK";
 	status(help);
 
 	absolute_time_t deadline = get_absolute_time();
@@ -212,8 +349,15 @@ int main(void)
 			uint16_t k = sb_read_keyboard();
 			if (!k) break;
 			uint8_t st = k >> 8, code = k & 0xFF;
-			if (st == KEY_STATE_PRESSED && code == KEY_F1) { reset(); continue; }
+			if (st == KEY_STATE_PRESSED && code == KEY_F1) { power_on(); continue; }
 			if (st == KEY_STATE_PRESSED && code == KEY_F2) { lcd_clear_screen(); picocalc_shell_exit(); continue; }
+			if (st == KEY_STATE_PRESSED && (code == KEY_F3 || code == KEY_F4)) {
+				choose(code == KEY_F3 ? 0 : 1);
+				status(code == KEY_F3 ? "Drive 0 changed: F1 to start again from it" : help);
+				note = code == KEY_F3 ? 300 : 0;
+				deadline = get_absolute_time();
+				continue;
+			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F5) { screenshot(); note = 180; continue; }
 			if (st == KEY_STATE_PRESSED) keys_event(&keys, code, true);
 			else if (st == KEY_STATE_RELEASED) keys_event(&keys, code, false);

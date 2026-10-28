@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "m1.h"
+
+static bool no_rd(void *c, int d, uint32_t o, void *b, uint32_t l) { (void)c; (void)d; (void)o; (void)b; (void)l; return false; }
+static bool no_wr(void *c, int d, uint32_t o, const void *b, uint32_t l) { (void)c; (void)d; (void)o; (void)b; (void)l; return false; }
+static const disk_io_t no_disks = { no_rd, no_wr, NULL };
 #include "keys.h"
 
 static uint8_t machine[1 << 17];
@@ -53,7 +57,7 @@ int main(int argc, char **argv)
 	if (!f || fread(rom, 1, sizeof rom, f) != sizeof rom) { fprintf(stderr, "usage: typetest level2.rom\n"); return 77; }
 	fclose(f);
 	m = (m1_t *)machine;
-	m1_init(m, rom);
+	m1_init(m, rom, &no_disks);
 	keys_init(&k);
 	fields(120);
 	int bad = 0;

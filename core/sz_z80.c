@@ -1,3 +1,4 @@
+/* superzazu/z80 (MIT, Nicolas Allemand), with one change marked below. */
 #include "sz_z80.h"
 
 // MARK: timings
@@ -1453,7 +1454,10 @@ void exec_opcode_cb(z80* const z, uint8_t opcode) {
     z->cyc += 7;
   }
 
-  if (reg == &hl) {
+  // (changed for the PicoCalc's Model I: BIT n,(HL) only reads. It wrote the
+  // byte back, which RAM doesn't notice but a disk controller's command
+  // register does.)
+  if (reg == &hl && x_ != 1) {
     wb(z, get_hl(z), hl);
   }
 }
