@@ -5,6 +5,7 @@
  * the field's deadline. */
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "pico/stdlib.h"
 #include "drivers/lcd.h"
 #include "drivers/font.h"
@@ -17,7 +18,7 @@
 #include "sha1.h"
 #include "picker.h"
 
-#define VERSION "0.4"
+#define VERSION "0.5"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -378,6 +379,27 @@ static void choose_layout(void)
 	set_title();
 }
 
+/* the shell's clock, for dating the files trs80 writes (screenshots, the
+   drives file, and the disk images as the Model I writes to them) */
+static bool shell_clock(uint16_t *date, uint16_t *time)
+{
+#ifdef PICOCALC_SHELL_HAS_TIME
+	int64_t ms;
+	int offset;
+	if (!picocalc_shell_time(&ms, &offset)) return false;
+	time_t t = (time_t)(ms / 1000) + (time_t)offset * 60;
+	struct tm tm;
+	gmtime_r(&t, &tm);
+	if (tm.tm_year + 1900 < 1980 || tm.tm_year + 1900 > 2107) return false;
+	fat32_pack_time(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, date, time);
+	return true;
+#else
+	(void)date;
+	(void)time;
+	return false;
+#endif
+}
+
 int main(void)
 {
 	sb_init();
@@ -388,6 +410,7 @@ int main(void)
 	lcd_set_foreground(C_FG);
 	lcd_clear_screen();
 	fat32_init();
+	fat32_set_time_source(shell_clock);
 	keyboard_init();
 
 	char problem[48];
