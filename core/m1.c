@@ -106,6 +106,8 @@ uint32_t m1_run(m1_t *m, uint32_t cycles)
 const uint8_t *m1_vram(const m1_t *m) { return m->mem + M1_VRAM_BASE; }
 uint64_t m1_instructions(const m1_t *m) { return m->instructions; }
 
+void m1_set_matrix(m1_t *m, const uint8_t rows[8]) { memcpy(m->kbd, rows, 8); }
+
 void m1_key(m1_t *m, int row, int col, bool down)
 {
 	if (row < 0 || row > 7 || col < 0 || col > 7) return;

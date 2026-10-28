@@ -6,6 +6,7 @@
 #define M1_H
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define M1_ROM_SIZE   0x3000		/* Level II: 12 KB at 0000 */
 #define M1_KBD_BASE   0x3800		/* keyboard matrix, 3800-3BFF */
@@ -23,6 +24,7 @@ uint32_t m1_run(m1_t *m, uint32_t cycles);	/* whole instructions until at least 
 const uint8_t *m1_vram(const m1_t *m);
 uint64_t m1_instructions(const m1_t *m);
 void     m1_key(m1_t *m, int row, int col, bool down);
+void     m1_set_matrix(m1_t *m, const uint8_t rows[8]);	/* the whole keyboard at once */
 size_t   m1_size(void);			/* sizeof the machine, for a static buffer */
 
 #endif
