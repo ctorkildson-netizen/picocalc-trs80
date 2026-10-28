@@ -19,7 +19,7 @@
 #include "picker.h"
 #include "dosclock.h"
 
-#define VERSION "0.6"
+#define VERSION "0.7"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -441,10 +441,13 @@ int main(void)
 	power_on();
 	set_title();
 	const char *help = "F1 power on  F2 leave  F3 F4 disks  F5 save screen  F6 keys";
-	status(lproblem[0] ? lproblem : help);
-	int note = lproblem[0] ? 600 : 0;	/* fields until the status line shows the help again */
+	struct tm now_tm;
+	bool have_clock = now_local(&now_tm);
+	status(lproblem[0] ? lproblem : have_clock ? help : "The shell's clock isn't set: files undated, DOS clock left alone");
+	int note = lproblem[0] || !have_clock ? 600 : 0;	/* fields until the status line shows the help again */
 
 	absolute_time_t deadline = get_absolute_time();
+	uint32_t thirds = 0;		/* (a field is 16666 2/3 us: the thirds carried) */
 	for (;;) {
 		/* the keyboard: everything waiting */
 		for (int i = 0; i < 8; i++) {
@@ -478,13 +481,21 @@ int main(void)
 		if (!dosclock.done) {
 			struct tm tm;
 			if (!now_local(&tm)) dosclock.done = true;
-			else dosclock_field(&dosclock, m, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+			else if (dosclock_field(&dosclock, m, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)) {
+				char b[64];
+				snprintf(b, sizeof b, "DOS clock set from the shell's: %02d/%02d/%02d %02d:%02d",
+				         tm.tm_mon + 1, tm.tm_mday, tm.tm_year % 100, tm.tm_hour, tm.tm_min);
+				status(b);
+				note = 300;
+			}
 		}
 		present();
 		if (note && !--note) status(help);
 
 		/* pace on an absolute deadline, so a late field doesn't add up */
-		deadline = delayed_by_us(deadline, 16667);
+		thirds += 2;
+		deadline = delayed_by_us(deadline, 16666 + thirds / 3);
+		thirds %= 3;
 		if (absolute_time_diff_us(get_absolute_time(), deadline) < -100000) deadline = get_absolute_time();
 		busy_wait_until(deadline);
 	}
