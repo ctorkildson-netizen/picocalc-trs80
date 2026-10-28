@@ -17,11 +17,11 @@
 #include "keys.h"
 #include "sha1.h"
 #include "picker.h"
-#include "dosclock.h"
 #include "sound.h"
+#include "dosclock.h"
 #include "hardware/clocks.h"
 
-#define VERSION "0.9"
+#define VERSION "0.10"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -260,6 +260,7 @@ static void load_drives(void)
 	for (char *l = strtok(b, "\r\n"); l; l = strtok(NULL, "\r\n"))
 		if (l[0] >= '0' && l[0] < '0' + DRIVES && l[1] == ' ') insert(l[0] - '0', l + 2);
 		else if (l[0] == 'L' && l[1] == ' ') use_layout(l + 2);
+		else if (l[0] == 'V' && l[1] == ' ' && l[2] >= '0' && l[2] <= '3') sound_volume(l[2] - '0');
 }
 
 static void save_drives(void)
@@ -269,6 +270,7 @@ static void save_drives(void)
 	for (int d = 0; d < DRIVES; d++)
 		if (dpath[d][0]) n += snprintf(b + n, sizeof b - (size_t)n, "%d %s\r\n", d, dpath[d]);
 	if (lpath[0]) n += snprintf(b + n, sizeof b - (size_t)n, "L %s\r\n", lpath);
+	n += snprintf(b + n, sizeof b - (size_t)n, "V %d\r\n", sound_get_volume());
 	fat32_delete(DRIVES_FILE);
 	fat32_file_t f;
 	if (fat32_create(&f, DRIVES_FILE) != FAT32_OK) return;
@@ -470,10 +472,14 @@ int main(void)
 				continue;
 			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F5) { screenshot(); note = 180; continue; }
-			if (st == KEY_STATE_PRESSED && code == KEY_F7) {
-				sound_mute(!sound_muted());
-				status(sound_muted() ? "Sound off (F7 turns it on)" : "Sound on");
+			if (st == KEY_STATE_PRESSED && code == KEY_F7) {	/* the amplifier's knob */
+				static const char *const names[4] = { "off", "quiet", "medium", "loud" };
+				sound_volume((sound_get_volume() + 1) % 4);
+				char b[48];
+				snprintf(b, sizeof b, "Sound: %s (F7 again: %s)", names[sound_get_volume()], names[(sound_get_volume() + 1) % 4]);
+				status(b);
 				note = 180;
+				save_drives();
 				continue;
 			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F6) {

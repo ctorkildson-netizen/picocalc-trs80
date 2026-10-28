@@ -25,6 +25,8 @@ static uint32_t ring[RING_WORDS] __attribute__((aligned(1u << RING_BITS)));
 static int dma_ch = -1;
 static uint32_t w;				/* the next word to write, as an index */
 static bool muted;
+static int vol = 2;			/* 0 off, 1 quiet, 2 medium, 3 loud */
+static const int32_t vol_scale[4] = { 0, 96, 176, 256 };	/* /256 */
 static uint32_t late;
 
 static inline uint32_t word(int16_t s)
@@ -71,7 +73,7 @@ void sound_put(const int16_t *s, size_t n)
 	/* fallen behind (the DMA passed us): start again a little ahead of it */
 	if (ahead() > RING_WORDS - SILENCE_AHEAD) { late++; w = (reading() + 64) % RING_WORDS; }
 	for (size_t i = 0; i < n; i++) {
-		uint32_t v = word(muted ? 0 : s[i]);
+		uint32_t v = word(muted ? 0 : (int16_t)((int32_t)s[i] * vol_scale[vol] / 256));
 		ring[w] = v; ring[(w + 1) % RING_WORDS] = v;
 		w = (w + 2) % RING_WORDS;
 	}
@@ -90,3 +92,6 @@ void sound_silence(void)
 void sound_mute(bool on) { muted = on; }
 bool sound_muted(void) { return muted; }
 uint32_t sound_late(void) { return late; }
+
+void sound_volume(int v) { vol = v < 0 ? 0 : v > 3 ? 3 : v; }
+int sound_get_volume(void) { return vol; }

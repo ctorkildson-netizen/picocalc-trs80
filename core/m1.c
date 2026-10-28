@@ -76,7 +76,7 @@ static inline void mem_write(m1_t *m, uint16_t a, uint8_t v)
 
 static uint8_t sz_rd(void *u, uint16_t a) { return mem_read((m1_t *)u, a); }
 static void sz_wr(void *u, uint16_t a, uint8_t v) { mem_write((m1_t *)u, a, v); }
-#define A_GAIN 7000			/* a full-scale level, out of 32767 */
+#define A_GAIN 16000			/* a level's height, out of 32767 (an edge swings twice that) */
 
 /* every sample whose boundary has passed, up to the cycle now */
 static void audio_advance(m1_t *m, uint64_t now)
