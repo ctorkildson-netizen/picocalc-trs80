@@ -19,6 +19,7 @@ struct m1 {
 	uint64_t a_last;		/* cycle of the last level change counted in a_acc */
 	int64_t a_acc;			/* level x cycles since a_prev */
 	int8_t a_level;			/* -1, 0, +1 */
+	bool wide;			/* port FF bit 3: 32 characters a line */
 	int32_t a_x1, a_y1;		/* the DC blocker */
 	int16_t a_ring[M1_AUDIO_RING];
 	uint32_t a_head, a_tail, a_dropped;
@@ -109,6 +110,7 @@ static void sz_out(z80 *z, uint8_t p, uint8_t v)
 {
 	m1_t *m = (m1_t *)z->userdata;
 	if (p != 0xFF) return;
+	m->wide = (v & 8) != 0;
 	/* the cassette output: 1 one way, 2 the other, 0 (and 3) nothing. The
 	   edge is stamped at the start of the writing instruction (m->cycles has
 	   not counted it yet): the same offset for every edge, so pitch is exact */
@@ -160,6 +162,7 @@ void m1_power_on(m1_t *m, int ram_kb)
 	m->next_event = fdc_next_event(&m->fdc);
 	memset(m->kbd, 0, sizeof m->kbd);
 	m->a_level = 0;
+	m->wide = false;
 	z80_init(&m->cpu);
 	m->cpu.read_byte = sz_rd;
 	m->cpu.write_byte = sz_wr;
@@ -200,3 +203,4 @@ fdc_t *m1_fdc(m1_t *m) { return &m->fdc; }
 bool m1_has_ei(const m1_t *m) { return m->ei; }
 uint8_t m1_peek(const m1_t *m, uint16_t a) { return a >= M1_VRAM_BASE && a < m->ram_top ? m->mem[a] : 0xFF; }
 void m1_poke(m1_t *m, uint16_t a, uint8_t v) { if (a >= M1_RAM_BASE && a < m->ram_top) m->mem[a] = v; }
+bool m1_wide(const m1_t *m) { return m->wide; }

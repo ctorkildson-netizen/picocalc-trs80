@@ -79,6 +79,10 @@ int main(int argc, char **argv)
 	for (int r = 0; r < 8; r++) if (k.matrix[r]) { printf("FAIL: stuck key, row %d %02x\n", r, k.matrix[r]); bad++; }
 	type("\n20 PRINT 1234567890\nRUN\n");
 	if (!has(" 1234567890")) { puts("FAIL: digits after shifted keys"); bad++; }
+	type("PRINT CHR$(23)\n");
+	if (!m1_wide(m)) { puts("FAIL: CHR$(23) didn't select 32 characters a line"); bad++; }
+	type("CLS\n");
+	if (m1_wide(m)) { puts("FAIL: CLS didn't go back to 64"); bad++; }
 	type("PRINT MEM\n");
 	char s[16][65];
 	screen(s);

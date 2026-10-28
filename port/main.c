@@ -5,6 +5,7 @@
  * the field's deadline. */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 #include "pico/stdlib.h"
 #include "drivers/lcd.h"
@@ -21,7 +22,7 @@
 #include "dosclock.h"
 #include "hardware/clocks.h"
 
-#define VERSION "0.10"
+#define VERSION "0.11"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -36,6 +37,12 @@ static m1_t *m = (m1_t *)machine;
 static keys_t keys;
 static uint8_t rom[M1_ROM_SIZE];
 static char rom_name[48];
+static char rom_src[48];		/* the file(s) it came from */
+static char rom_sha[41];
+static uint8_t cg[1024];		/* the Model I's character generator, if on the card */
+static bool have_cg, use_cg;
+static int ram_kb = 48;
+static int m1_ram_kb_now = 48;		/* what the running machine has */
 
 /* ------------------------------------------------------------ the ROM */
 
@@ -59,10 +66,14 @@ static bool read_file(const char *path, uint8_t *buf, size_t want)
 static bool load_rom(char *problem, size_t n)
 {
 	bool ok = read_file("/trs80/level2.rom", rom, M1_ROM_SIZE);
-	if (!ok) ok = read_file("/trs80/rom-a.z1", rom, 4096) && read_file("/trs80/rom-b.z2", rom + 4096, 4096) && read_file("/trs80/rom-c.z3", rom + 8192, 4096);
-	if (!ok) ok = read_file("/trs80/rom-a_alt.z1", rom, 4096) && read_file("/trs80/rom-b_alt.z2", rom + 4096, 4096) && read_file("/trs80/rom-c_alt.z3", rom + 8192, 4096);
+	if (ok) snprintf(rom_src, sizeof rom_src, "level2.rom");
+	if (!ok && (ok = read_file("/trs80/rom-a.z1", rom, 4096) && read_file("/trs80/rom-b.z2", rom + 4096, 4096) && read_file("/trs80/rom-c.z3", rom + 8192, 4096)))
+		snprintf(rom_src, sizeof rom_src, "rom-a.z1 rom-b.z2 rom-c.z3");
+	if (!ok && (ok = read_file("/trs80/rom-a_alt.z1", rom, 4096) && read_file("/trs80/rom-b_alt.z2", rom + 4096, 4096) && read_file("/trs80/rom-c_alt.z3", rom + 8192, 4096)))
+		snprintf(rom_src, sizeof rom_src, "rom-a_alt.z1 rom-b_alt.z2 rom-c_alt.z3");
 	if (!ok) { snprintf(problem, n, "No Level II ROM in /trs80"); return false; }
-	char h[41];
+	have_cg = read_file("/trs80/mcm6670p.z29", cg, sizeof cg);	/* (optional: the original lettering) */
+	char *h = rom_sha;
 	sha1_hex(rom, M1_ROM_SIZE, h);
 	for (unsigned i = 0; i < sizeof known / sizeof known[0]; i++)
 		if (!strcmp(h, known[i].sha1)) { snprintf(rom_name, sizeof rom_name, "%s", known[i].name); return true; }
@@ -102,34 +113,49 @@ static const uint8_t arrows[4][10] = {
 	{ 0x00, 0x04, 0x02, 0x1F, 0x02, 0x04, 0x00, 0, 0, 0 },	/* right */
 };
 
-static void draw_cell(int col, uint8_t v)
+/* one character into rowbuf at column col; wide (32 a line) takes two cells */
+static void draw_cell(int col, uint8_t v, bool wide)
 {
-	int x0 = col * CELL_W;
-	for (int y = 0; y < CELL_H; y++) for (int x = 0; x < CELL_W; x++) rowbuf[y][x0 + x] = C_BG;
+	int x0 = col * CELL_W, w = wide ? 2 * CELL_W : CELL_W;
+	for (int y = 0; y < CELL_H; y++) for (int x = 0; x < w; x++) rowbuf[y][x0 + x] = C_BG;
 	if (v & 0x80) {			/* graphics: 2 x 3 blocks, bit 0 top left ... bit 5 bottom right */
+		int lw = wide ? 5 : 3, rw = wide ? 5 : 2;
 		for (int b = 0; b < 6; b++) {
 			if (!(v & (1u << b))) continue;
-			int bx = (b & 1) ? 3 : 0, bw = (b & 1) ? 2 : 3, by = (b >> 1) * 6;
+			int bx = (b & 1) ? lw : 0, bw = (b & 1) ? rw : lw, by = (b >> 1) * 6;
 			for (int y = by; y < by + 6; y++) for (int x = bx; x < bx + bw; x++) rowbuf[y][x0 + x] = C_FG;
 		}
 		return;
 	}
 	uint8_t c = v & 0x7F;
 	if (c < 0x20) c += 0x40;
+	int sx = wide ? 2 : 1;
+	if (use_cg && have_cg) {	/* the Model I's own letters: 5 x 8, every row twice, as its 12-line cells look */
+		for (int y = 0; y < 8; y++)
+			for (int x = 0; x < CELL_W; x++)
+				if (cg[c * 8 + y] & (0x10 >> x))
+					for (int k = 0; k < sx; k++) rowbuf[1 + 2 * y][x0 + x * sx + k] = rowbuf[2 + 2 * y][x0 + x * sx + k] = C_FG;
+		return;
+	}
 	const uint8_t *g = c >= 0x5B && c <= 0x5E ? arrows[c - 0x5B] : &font_5x10.glyphs[c * GLYPH_HEIGHT];
 	for (int y = 0; y < GLYPH_HEIGHT; y++)
 		for (int x = 0; x < CELL_W; x++)
-			if (g[y] & (0x10 >> x)) rowbuf[GLYPH_TOP + y][x0 + x] = C_FG;
+			if (g[y] & (0x10 >> x))
+				for (int k = 0; k < sx; k++) rowbuf[GLYPH_TOP + y][x0 + x * sx + k] = C_FG;
 }
 
 /* draw the rows that changed since the last time */
+static bool shown_wide;
 static void present(void)
 {
 	const uint8_t *v = m1_vram(m);
+	bool wide = m1_wide(m);
+	if (wide != shown_wide) { shadow_valid = false; shown_wide = wide; }
 	for (int r = 0; r < M1_ROWS; r++) {
 		const uint8_t *row = v + r * M1_COLS;
 		if (shadow_valid && !memcmp(row, shadow + r * M1_COLS, M1_COLS)) continue;
-		for (int c = 0; c < M1_COLS; c++) draw_cell(c, row[c]);
+		if (wide) for (int c = 0; c < M1_COLS; c += 2) draw_cell(c, row[c], true);
+		else for (int c = 0; c < M1_COLS; c++) draw_cell(c, row[c], false);
 		lcd_blit(&rowbuf[0][0], 0, (uint16_t)(TOP + r * CELL_H), 320, CELL_H);
 		memcpy(shadow + r * M1_COLS, row, M1_COLS);
 	}
@@ -180,7 +206,8 @@ static void screenshot(void)
 /* ------------------------------------------------------------ the disks */
 
 #define DRIVES 2			/* drives the menu offers (the controller has 4) */
-#define DRIVES_FILE "/trs80/drives.txt"
+#define SETTINGS_FILE "/trs80/settings.txt"
+#define OLD_SETTINGS "/trs80/drives.txt"	/* (0.3-0.10 kept them here) */
 static fat32_file_t dfile[FDC_DRIVES];
 static char dpath[FDC_DRIVES][PICKER_PATH];
 
@@ -251,7 +278,7 @@ static void no_layout(void) { keys_set_layout(&keys, NULL, 0); lpath[0] = 0; }
 static void load_drives(void)
 {
 	fat32_file_t f;
-	if (fat32_open(&f, DRIVES_FILE) != FAT32_OK) return;
+	if (fat32_open(&f, SETTINGS_FILE) != FAT32_OK && fat32_open(&f, OLD_SETTINGS) != FAT32_OK) return;
 	char b[1024];
 	size_t n = 0;
 	fat32_read(&f, b, sizeof b - 1, &n);
@@ -261,6 +288,8 @@ static void load_drives(void)
 		if (l[0] >= '0' && l[0] < '0' + DRIVES && l[1] == ' ') insert(l[0] - '0', l + 2);
 		else if (l[0] == 'L' && l[1] == ' ') use_layout(l + 2);
 		else if (l[0] == 'V' && l[1] == ' ' && l[2] >= '0' && l[2] <= '3') sound_volume(l[2] - '0');
+		else if (l[0] == 'M' && l[1] == ' ') { int k = atoi(l + 2); if (k == 16 || k == 32 || k == 48) ram_kb = k; }
+		else if (l[0] == 'F' && l[1] == ' ') use_cg = l[2] == '1';
 }
 
 static void save_drives(void)
@@ -270,10 +299,11 @@ static void save_drives(void)
 	for (int d = 0; d < DRIVES; d++)
 		if (dpath[d][0]) n += snprintf(b + n, sizeof b - (size_t)n, "%d %s\r\n", d, dpath[d]);
 	if (lpath[0]) n += snprintf(b + n, sizeof b - (size_t)n, "L %s\r\n", lpath);
-	n += snprintf(b + n, sizeof b - (size_t)n, "V %d\r\n", sound_get_volume());
-	fat32_delete(DRIVES_FILE);
+	n += snprintf(b + n, sizeof b - (size_t)n, "V %d\r\nM %d\r\nF %d\r\n", sound_get_volume(), ram_kb, use_cg ? 1 : 0);
+	fat32_delete(SETTINGS_FILE);
+	fat32_delete(OLD_SETTINGS);
 	fat32_file_t f;
-	if (fat32_create(&f, DRIVES_FILE) != FAT32_OK) return;
+	if (fat32_create(&f, SETTINGS_FILE) != FAT32_OK) return;
 	size_t put;
 	fat32_write(&f, b, (size_t)n, &put);
 	fat32_close(&f);
@@ -299,7 +329,6 @@ static const char *base_name(const char *p) { const char *s = strrchr(p, '/'); r
 /* ------------------------------------------------------------ running */
 
 volatile bool user_interrupt;		/* (the keyboard driver sets it on Brk; not used here) */
-static int ram_kb = 48;
 static char title[80];
 
 static void redraw(void)
@@ -344,6 +373,7 @@ static bool now_local(struct tm *tm)
 static void power_on(void)
 {
 	dosclock_reset(&dosclock);
+	m1_ram_kb_now = ram_kb;
 	m1_power_on(m, ram_kb);
 	keys_init(&keys);
 	shadow_valid = false;
@@ -425,6 +455,81 @@ static bool shell_clock(uint16_t *date, uint16_t *time)
 #endif
 }
 
+/* F8: settings, and what the emulator found (for a report: F5 saves it) */
+static void settings_page(void)
+{
+	static const char *const vol_names[4] = { "off", "quiet", "medium", "loud" };
+	static const char *const kinds[3] = { "-", "JV1", "DMK" };
+	char lines[30][65];
+	bool saved = false;
+	for (;;) {
+		int n = 0;
+		#define L(...) snprintf(lines[n++], 65, __VA_ARGS__)
+		L("TRS-80 Model I %s: settings", VERSION);
+		L("%s", "");
+		L("  M  memory   %dK%s", ram_kb, ram_kb != m1_ram_kb_now ? "   (F1 to start with it)" : "");
+		L("  F  letters  %s", use_cg ? "the Model I's own" : have_cg ? "PicoCalc's (clearer)" : "PicoCalc's (no mcm6670p.z29 on the card)");
+		L("  S  sound    %s", vol_names[sound_get_volume()]);
+		L("%s", "");
+		L("What it found");
+		L("  ROM     %.52s", rom_name);
+		L("          %.54s", rom_src);
+		L("          SHA-1 %.40s", rom_sha);
+		for (int d = 0; d < DRIVES; d++) {
+			const drive_t *dr = &m1_fdc(m)->drive[d];
+			if (dr->kind == DISK_NONE) L("  drive %d  empty", d);
+			else {
+				L("  drive %d  %.46s", d, base_name(dpath[d]));
+				L("           %s, %d tracks, %d side%s%s", kinds[dr->kind], dr->tracks, dr->sides, dr->sides == 1 ? "" : "s", dr->wp ? ", protected" : "");
+			}
+		}
+		L("  Expansion Interface: %s", m1_has_ei(m) ? "fitted (a disk in drive 0)" : "not fitted");
+		L("  keys    %.52s", lpath[0] ? base_name(lpath) : "the usual ones");
+		struct tm tm;
+		if (now_local(&tm)) L("  clock   the shell's: %04d-%02d-%02d %02d:%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+		else L("  clock   the shell's isn't set");
+		L("  counts  disk errors %u, sound late %u, keys lost %u",
+		  (unsigned)m1_fdc(m)->errors, (unsigned)sound_late(), (unsigned)keys.dropped);
+		L("%s", "");
+		L("M F S change   F5 save this page   Esc or F8 back");
+		#undef L
+		lcd_clear_screen();
+		for (int r = 0; r < n; r++) {
+			lcd_set_foreground(r == 0 || r == n - 1 || r == 6 ? C_DIM : C_FG);
+			lcd_putstr(0, (uint8_t)(r + 1), lines[r]);
+		}
+		if (saved) { lcd_set_foreground(C_DIM); lcd_putstr(0, 31, "Saved /screenshots/trs80-settings.txt"); }
+		lcd_set_foreground(C_FG);
+		saved = false;
+		uint8_t c = 0;
+		while (!c) {
+			uint16_t k = sb_read_keyboard();
+			if ((k >> 8) == KEY_STATE_PRESSED) c = k & 0xFF;
+			else sleep_ms(10);
+		}
+		if (c >= 'A' && c <= 'Z') c += 32;
+		if (c == KEY_ESC || c == KEY_F8) break;
+		if (c == 'm') ram_kb = ram_kb == 48 ? 16 : ram_kb + 16;
+		else if (c == 'f' && have_cg) { use_cg = !use_cg; shadow_valid = false; }
+		else if (c == 's') sound_volume((sound_get_volume() + 1) % 4);
+		else if (c == KEY_F5) {
+			fat32_file_t f;
+			if (fat32_dir_create(&f, "/screenshots") == FAT32_OK) fat32_close(&f);
+			fat32_delete("/screenshots/trs80-settings.txt");
+			if (fat32_create(&f, "/screenshots/trs80-settings.txt") == FAT32_OK) {
+				for (int r = 0; r < n; r++) { size_t put; char b[70]; int k = snprintf(b, sizeof b, "%s\r\n", lines[r]); fat32_write(&f, b, (size_t)k, &put); }
+				fat32_close(&f);
+				saved = true;
+			}
+			continue;
+		}
+		else continue;
+		save_drives();
+	}
+	redraw();
+	set_title();
+}
+
 int main(void)
 {
 	sb_init();
@@ -447,7 +552,7 @@ int main(void)
 	load_drives();
 	power_on();
 	set_title();
-	const char *help = "F1 on  F2 leave  F3 F4 disks  F5 screen  F6 keys  F7 sound";
+	const char *help = "F1 on  F2 leave  F3 F4 disks  F5 screen  F6 keys  F7 sound  F8 set";
 	struct tm now_tm;
 	bool have_clock = now_local(&now_tm);
 	status(lproblem[0] ? lproblem : have_clock ? help : "The shell's clock isn't set: files undated, DOS clock left alone");
@@ -472,6 +577,13 @@ int main(void)
 				continue;
 			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F5) { screenshot(); note = 180; continue; }
+			if (st == KEY_STATE_PRESSED && code == KEY_F8) {
+				sound_silence();
+				settings_page();
+				status(help);
+				note = 0;
+				continue;
+			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F7) {	/* the amplifier's knob */
 				static const char *const names[4] = { "off", "quiet", "medium", "loud" };
 				sound_volume((sound_get_volume() + 1) % 4);
