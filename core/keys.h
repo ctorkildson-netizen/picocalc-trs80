@@ -19,6 +19,7 @@
 #define KEYS_GAP  2		/* fields between one key's release and the next event */
 #define KEYS_QUEUE 32
 #define KEYS_HELD 8
+#define KEYS_LAYOUT 24
 
 /* a PicoCalc code's place on the Model I keyboard */
 enum { SH_ANY = 0, SH_ON = 1, SH_OFF = 2 };
@@ -34,7 +35,21 @@ typedef struct {
 	bool pc_shift;			/* the PicoCalc's Shift, held */
 	uint32_t dropped;		/* events that didn't fit the queue */
 	uint8_t matrix[8];		/* the result: row bits, a set bit is a key down */
+	key_bind_t layout[KEYS_LAYOUT];	/* a game's own keys, looked at first */
+	uint8_t n_layout;
 } keys_t;
+
+/* A layout: a text file of lines "PicoCalc key = Model I key", such as
+       LEFT = ,
+       x    = SPACE
+   with # starting a comment. PicoCalc keys are a character or LEFT RIGHT UP
+   DOWN SPACE ENTER TAB BACKSPACE DEL HOME ESC; Model I keys a character of
+   its keyboard or ENTER CLEAR BREAK UP DOWN LEFT RIGHT SPACE SHIFT. A layout
+   key leaves SHIFT to the PicoCalc's Shift. Everything else keeps its usual
+   place. Returns the number of keys, or -(line number) for the first line
+   that is wrong or names a key twice; a wrong file changes nothing. */
+int keys_parse_layout(const char *text, key_bind_t *out, int max);
+void keys_set_layout(keys_t *k, const key_bind_t *b, int n);
 
 void keys_init(keys_t *k);
 void keys_event(keys_t *k, uint8_t code, bool down);	/* from the PicoCalc */

@@ -17,7 +17,7 @@
 #include "sha1.h"
 #include "picker.h"
 
-#define VERSION "0.3"
+#define VERSION "0.4"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -216,7 +216,33 @@ static bool insert(int d, const char *path)
 	return true;
 }
 
-/* /trs80/drives.txt: a line per drive, "0 /trs80/disks/newdos.dsk" */
+/* a game's keys: /trs80/layouts/NAME.txt (see keys.h) */
+static char lpath[PICKER_PATH];
+static char lproblem[96];
+
+static const char *base_name(const char *p);
+static bool use_layout(const char *path)
+{
+	static char text[2048];
+	static key_bind_t b[KEYS_LAYOUT];
+	lproblem[0] = 0;
+	fat32_file_t f;
+	if (fat32_open(&f, path) != FAT32_OK) { snprintf(lproblem, sizeof lproblem, "Can't open %.40s", path); return false; }
+	size_t n = 0;
+	fat32_read(&f, text, sizeof text - 1, &n);
+	fat32_close(&f);
+	text[n] = 0;
+	int r = keys_parse_layout(text, b, KEYS_LAYOUT);
+	if (r < 0) { snprintf(lproblem, sizeof lproblem, "%.30s: line %d is wrong, not used", base_name(path), -r); return false; }
+	keys_set_layout(&keys, b, r);
+	snprintf(lpath, sizeof lpath, "%s", path);
+	return true;
+}
+
+static void no_layout(void) { keys_set_layout(&keys, NULL, 0); lpath[0] = 0; }
+
+/* /trs80/drives.txt: a line per drive, "0 /trs80/disks/newdos.dsk", and
+   "L /trs80/layouts/meteor.txt" for the keys */
 static void load_drives(void)
 {
 	fat32_file_t f;
@@ -228,6 +254,7 @@ static void load_drives(void)
 	b[n] = 0;
 	for (char *l = strtok(b, "\r\n"); l; l = strtok(NULL, "\r\n"))
 		if (l[0] >= '0' && l[0] < '0' + DRIVES && l[1] == ' ') insert(l[0] - '0', l + 2);
+		else if (l[0] == 'L' && l[1] == ' ') use_layout(l + 2);
 }
 
 static void save_drives(void)
@@ -236,6 +263,7 @@ static void save_drives(void)
 	int n = 0;
 	for (int d = 0; d < DRIVES; d++)
 		if (dpath[d][0]) n += snprintf(b + n, sizeof b - (size_t)n, "%d %s\r\n", d, dpath[d]);
+	if (lpath[0]) n += snprintf(b + n, sizeof b - (size_t)n, "L %s\r\n", lpath);
 	fat32_delete(DRIVES_FILE);
 	fat32_file_t f;
 	if (fat32_create(&f, DRIVES_FILE) != FAT32_OK) return;
@@ -251,6 +279,12 @@ static bool is_disk(const char *name)
 	char x[5] = { 0 };
 	for (int i = 0; i < 4 && e[i + 1]; i++) x[i] = (char)(e[i + 1] | 0x20);
 	return !strcmp(x, "dsk") || !strcmp(x, "dmk") || !strcmp(x, "jv1");
+}
+
+static bool is_text(const char *name)
+{
+	const char *e = strrchr(name, '.');
+	return e && (e[1] | 0x20) == 't' && (e[2] | 0x20) == 'x' && (e[3] | 0x20) == 't' && !e[4];
 }
 
 static const char *base_name(const char *p) { const char *s = strrchr(p, '/'); return s ? s + 1 : p; }
@@ -272,8 +306,9 @@ static void redraw(void)
 
 static void set_title(void)
 {
-	snprintf(title, sizeof title, "TRS-80 Model I %s  %dK  0:%.22s  1:%.22s", VERSION, ram_kb,
-	         dpath[0][0] ? base_name(dpath[0]) : "-", dpath[1][0] ? base_name(dpath[1]) : "-");
+	snprintf(title, sizeof title, "Model I %s %dK 0:%.16s 1:%.16s keys:%.10s", VERSION, ram_kb,
+	         dpath[0][0] ? base_name(dpath[0]) : "-", dpath[1][0] ? base_name(dpath[1]) : "-",
+	         lpath[0] ? base_name(lpath) : "usual");
 	lcd_set_foreground(C_DIM);
 	char b[65];
 	snprintf(b, sizeof b, "%-64.64s", title);
@@ -288,26 +323,33 @@ static void power_on(void)
 	shadow_valid = false;
 }
 
+/* the picker, over the Model I's screen; puts everything back after */
+static int pick(const picker_style_t *style, char *dir, const char *start, char *path)
+{
+	keyboard_set_background_poll(true);
+	fat32_file_t t;
+	if (fat32_open(&t, dir) == FAT32_OK) fat32_close(&t);
+	else strcpy(dir, "/");
+	int r = picker_run(style, dir, start, path);
+	keyboard_set_background_poll(false);
+	while (keyboard_key_available()) keyboard_get_key();
+	lcd_set_font(&font_5x10);
+	lcd_set_foreground(C_FG);
+	lcd_set_background(C_BG);
+	return r;
+}
+
 /* F3, F4: choose the disk for drive 0 or 1 (Esc: leave it; Del: empty it) */
 static void choose(int d)
 {
-	keyboard_set_background_poll(true);
 	static const char *const help[] = { "  Del            empty the drive", NULL };
 	static const picker_style_t style = {
 		.title = "Choose a disk", .filter = is_disk, .noun = "disk", .nouns = "disks",
 		.keys = "\x7F\xD4", .keys_help = help,
 	};
 	static char dir[PICKER_PATH] = "/trs80/disks";
-	fat32_file_t t;
-	if (fat32_open(&t, dir) == FAT32_OK) fat32_close(&t);
-	else strcpy(dir, "/");
 	char path[PICKER_PATH];
-	int r = picker_run(&style, dir, dpath[d][0] ? base_name(dpath[d]) : NULL, path);
-	keyboard_set_background_poll(false);
-	while (keyboard_key_available()) keyboard_get_key();
-	lcd_set_font(&font_5x10);
-	lcd_set_foreground(C_FG);
-	lcd_set_background(C_BG);
+	int r = pick(&style, dir, dpath[d][0] ? base_name(dpath[d]) : NULL, path);
 	if (r == PICKER_CHOSEN) {
 		if (!insert(d, path)) eject(d);
 		save_drives();
@@ -315,6 +357,23 @@ static void choose(int d)
 		eject(d);
 		save_drives();
 	}
+	redraw();
+	set_title();
+}
+
+/* F6 (Shift-F1): choose a game's keys (Del: the usual keys) */
+static void choose_layout(void)
+{
+	static const char *const help[] = { "  Del            the usual keys", NULL };
+	static const picker_style_t style = {
+		.title = "Keys for a game", .filter = is_text, .noun = "layout", .nouns = "layouts",
+		.keys = "\x7F\xD4", .keys_help = help,
+	};
+	static char dir[PICKER_PATH] = "/trs80/layouts";
+	char path[PICKER_PATH];
+	int r = pick(&style, dir, lpath[0] ? base_name(lpath) : NULL, path);
+	if (r == PICKER_CHOSEN) { if (use_layout(path)) save_drives(); }
+	else if (r == 0x7F || r == 0xD4) { no_layout(); save_drives(); }
 	redraw();
 	set_title();
 }
@@ -338,11 +397,11 @@ int main(void)
 	load_drives();
 	power_on();
 	set_title();
-	const char *help = "F1 power on  F2 leave  F3 F4 disks  F5 save screen  Esc BREAK";
-	status(help);
+	const char *help = "F1 power on  F2 leave  F3 F4 disks  F5 save screen  F6 keys";
+	status(lproblem[0] ? lproblem : help);
+	int note = lproblem[0] ? 600 : 0;	/* fields until the status line shows the help again */
 
 	absolute_time_t deadline = get_absolute_time();
-	int note = 0;				/* fields until the status line shows the help again */
 	for (;;) {
 		/* the keyboard: everything waiting */
 		for (int i = 0; i < 8; i++) {
@@ -359,6 +418,13 @@ int main(void)
 				continue;
 			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F5) { screenshot(); note = 180; continue; }
+			if (st == KEY_STATE_PRESSED && code == KEY_F6) {
+				choose_layout();
+				status(lproblem[0] ? lproblem : help);
+				note = lproblem[0] ? 600 : 0;
+				deadline = get_absolute_time();
+				continue;
+			}
 			if (st == KEY_STATE_PRESSED) keys_event(&keys, code, true);
 			else if (st == KEY_STATE_RELEASED) keys_event(&keys, code, false);
 		}

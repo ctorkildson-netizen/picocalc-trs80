@@ -1,0 +1,8 @@
+# Meteor Mission II (Big Five Software, 1981)
+#   the game: < and > move left and right, R fires the retro rockets
+#   going down and the missiles coming back up, CLEAR starts it
+# On the PicoCalc: the arrows move, Up or Space fires; Home is CLEAR as usual.
+LEFT  = ,
+RIGHT = .
+UP    = R
+SPACE = R
