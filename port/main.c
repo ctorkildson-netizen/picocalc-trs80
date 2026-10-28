@@ -134,7 +134,7 @@ static void present(void)
 static void status(const char *s)
 {
 	char b[65];
-	snprintf(b, sizeof b, "%-64s", s);
+	snprintf(b, sizeof b, "%-64.64s", s);
 	lcd_set_foreground(C_DIM);
 	lcd_putstr(0, 31, b);
 	lcd_set_foreground(C_FG);
