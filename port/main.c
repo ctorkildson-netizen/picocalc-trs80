@@ -21,7 +21,7 @@
 #include "sound.h"
 #include "hardware/clocks.h"
 
-#define VERSION "0.8"
+#define VERSION "0.9"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -31,7 +31,7 @@
 #define C_BG 0x0000
 #define C_DIM 0x8410
 
-static uint8_t machine[80 * 1024] __attribute__((aligned(8)));
+static uint8_t machine[M1_MACHINE_MAX] __attribute__((aligned(8)));
 static m1_t *m = (m1_t *)machine;
 static keys_t keys;
 static uint8_t rom[M1_ROM_SIZE];
@@ -70,15 +70,16 @@ static bool load_rom(char *problem, size_t n)
 	return true;
 }
 
-static void no_rom(const char *problem)
+static void stop(const char *problem, bool rom_help)
 {
 	lcd_set_font(&font_8x10);
 	const char *l[] = {
 		"TRS-80 Model I", "", problem, "",
 		"Put Level II BASIC on the SD card:", "",
 		"  /trs80/level2.rom    (12 KB)", "or MAME's trs80l2 set:",
-		"  /trs80/rom-a.z1  rom-b.z2  rom-c.z3", "", "", "Any key: back to the shell", NULL };
-	for (int r = 0; l[r]; r++) lcd_putstr(0, (uint8_t)(r + 2), l[r]);
+		"  /trs80/rom-a.z1  rom-b.z2  rom-c.z3", "", "", NULL };
+	for (int r = 0; l[r] && (rom_help || r < 3); r++) lcd_putstr(0, (uint8_t)(r + 2), l[r]);
+	lcd_putstr(0, 16, "Any key: back to the shell");
 	for (;;) {
 		uint16_t k = sb_read_keyboard();
 		if ((k >> 8) == KEY_STATE_PRESSED) { lcd_clear_screen(); picocalc_shell_exit(); }
@@ -436,8 +437,8 @@ int main(void)
 	keyboard_init();
 
 	char problem[48];
-	if (m1_size() > sizeof machine) no_rom("Internal: the machine doesn't fit");
-	if (!load_rom(problem, sizeof problem)) no_rom(problem);
+	if (m1_size() > sizeof machine) stop("Internal: the machine doesn't fit", false);
+	if (!load_rom(problem, sizeof problem)) stop(problem, true);
 	m1_init(m, rom, &disk_io);
 	sound_init();
 	m1_audio(m, (uint64_t)M1_CLOCK_HZ * 4096, clock_get_hz(clk_sys));	/* (a sample every 4096 host clocks) */

@@ -43,5 +43,6 @@ void     m1_audio(m1_t *m, uint64_t num, uint64_t den);
 size_t   m1_audio_drain(m1_t *m, int16_t *dst, size_t max);	/* samples ready, oldest first */
 uint32_t m1_audio_dropped(const m1_t *m);	/* samples lost to a full ring */
 size_t   m1_size(void);			/* sizeof the machine, for a static buffer */
+#define M1_MACHINE_MAX (96 * 1024)	/* what a program should set aside (a host test checks it) */
 
 #endif

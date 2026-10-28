@@ -56,6 +56,7 @@ int main(int argc, char **argv)
 	FILE *f = argc > 1 ? fopen(argv[1], "rb") : NULL;
 	if (!f || fread(rom, 1, sizeof rom, f) != sizeof rom) { fprintf(stderr, "usage: typetest level2.rom\n"); return 77; }
 	fclose(f);
+	if (m1_size() > M1_MACHINE_MAX) { printf("FAIL: the machine is %zu bytes, more than M1_MACHINE_MAX\n", m1_size()); return 1; }
 	m = (m1_t *)machine;
 	m1_init(m, rom, &no_disks);
 	keys_init(&k);
