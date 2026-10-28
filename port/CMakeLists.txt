@@ -12,7 +12,7 @@ set(CORE ${CMAKE_CURRENT_LIST_DIR}/../core)
 set(DRV ${TS}/drivers)
 include(${CMAKE_CURRENT_LIST_DIR}/../../extras/picker/picker.cmake)
 
-add_executable(trs80 main.c ${CORE}/m1.c ${CORE}/sz_z80.c ${CORE}/keys.c ${CORE}/sha1.c ${CORE}/fdc.c
+add_executable(trs80 main.c ${CORE}/m1.c ${CORE}/sz_z80.c ${CORE}/keys.c ${CORE}/sha1.c ${CORE}/fdc.c ${CORE}/dosclock.c
     ${DRV}/fat32.c ${DRV}/sdcard.c ${DRV}/font-5x10.c ${DRV}/font-8x10.c
     ${DRV}/keyboard.c ${DRV}/lcd.c ${DRV}/southbridge.c)
 target_compile_definitions(trs80 PRIVATE M1_CPU_SZ)

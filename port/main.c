@@ -17,8 +17,9 @@
 #include "keys.h"
 #include "sha1.h"
 #include "picker.h"
+#include "dosclock.h"
 
-#define VERSION "0.5"
+#define VERSION "0.6"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -317,8 +318,27 @@ static void set_title(void)
 	lcd_set_foreground(C_FG);
 }
 
+static dosclock_t dosclock;
+
+/* the shell's local time, or false */
+static bool now_local(struct tm *tm)
+{
+#ifdef PICOCALC_SHELL_HAS_TIME
+	int64_t ms;
+	int offset;
+	if (!picocalc_shell_time(&ms, &offset)) return false;
+	time_t t = (time_t)(ms / 1000) + (time_t)offset * 60;
+	gmtime_r(&t, tm);
+	return tm->tm_year + 1900 >= 1980;
+#else
+	(void)tm;
+	return false;
+#endif
+}
+
 static void power_on(void)
 {
+	dosclock_reset(&dosclock);
 	m1_power_on(m, ram_kb);
 	keys_init(&keys);
 	shadow_valid = false;
@@ -455,6 +475,11 @@ int main(void)
 		m1_set_matrix(m, keys.matrix);
 
 		m1_run(m, FIELD_CYCLES);
+		if (!dosclock.done) {
+			struct tm tm;
+			if (!now_local(&tm)) dosclock.done = true;
+			else dosclock_field(&dosclock, m, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+		}
 		present();
 		if (note && !--note) status(help);
 

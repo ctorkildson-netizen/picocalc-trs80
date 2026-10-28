@@ -32,6 +32,8 @@ uint64_t m1_cycles(const m1_t *m);
 void     m1_set_matrix(m1_t *m, const uint8_t rows[8]);	/* the whole keyboard at once */
 fdc_t   *m1_fdc(m1_t *m);			/* the drives: fdc_insert() and so on */
 bool     m1_has_ei(const m1_t *m);
+uint8_t  m1_peek(const m1_t *m, uint16_t a);	/* RAM and video, without side effects */
+void     m1_poke(m1_t *m, uint16_t a, uint8_t v);
 size_t   m1_size(void);			/* sizeof the machine, for a static buffer */
 
 #endif

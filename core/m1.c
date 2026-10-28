@@ -122,3 +122,5 @@ uint64_t m1_cycles(const m1_t *m) { return m->cycles; }
 void m1_set_matrix(m1_t *m, const uint8_t rows[8]) { memcpy(m->kbd, rows, 8); }
 fdc_t *m1_fdc(m1_t *m) { return &m->fdc; }
 bool m1_has_ei(const m1_t *m) { return m->ei; }
+uint8_t m1_peek(const m1_t *m, uint16_t a) { return a >= M1_VRAM_BASE && a < m->ram_top ? m->mem[a] : 0xFF; }
+void m1_poke(m1_t *m, uint16_t a, uint8_t v) { if (a >= M1_RAM_BASE && a < m->ram_top) m->mem[a] = v; }

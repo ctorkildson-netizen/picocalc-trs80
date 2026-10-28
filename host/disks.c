@@ -7,6 +7,7 @@
 #include <string.h>
 #include "m1.h"
 #include "keys.h"
+#include "dosclock.h"
 
 static FILE *img[FDC_DRIVES];
 static bool rd(void *c, int d, uint32_t o, void *b, uint32_t l)
@@ -18,7 +19,9 @@ static const disk_io_t io = { rd, wr, NULL };
 static uint8_t machine[1 << 17];
 static m1_t *m;
 static keys_t k;
-static void fields(int n) { while (n--) { keys_field(&k); m1_set_matrix(m, k.matrix); m1_run(m, 29568); } }
+static dosclock_t dc;
+static int set_at = -1, nfield;
+static void fields(int n) { while (n--) { keys_field(&k); m1_set_matrix(m, k.matrix); m1_run(m, 29568); nfield++; if (getenv("DOSCLOCK") && dosclock_field(&dc, m, 2026, 10, 28, 15, 4, 0)) set_at = nfield; } }
 static void type(const char *s)
 {
 	for (; *s; s++) {
@@ -70,9 +73,16 @@ int main(int argc, char **argv)
 	if (!copy_in(0, argv[2])) { fprintf(stderr, "drive 0: not an image I know\n"); return 2; }
 	if (argc > 3 && strcmp(argv[3], "-") && !copy_in(1, argv[3])) { fprintf(stderr, "drive 1: not an image I know\n"); return 2; }
 	m1_power_on(m, 48);
+	dosclock_reset(&dc);
 	int secs = argc > 4 ? atoi(argv[4]) : 10;
 	fields(secs * 60);
+	if (getenv("SETCLOCK")) {	/* TRSDOS's clock: 4041 seconds, 4042 minutes, 4043 hours, 4044 year, 4045 day, 4046 month */
+		m1_poke(m, 0x4041, 56); m1_poke(m, 0x4042, 34); m1_poke(m, 0x4043, 12);
+		m1_poke(m, 0x4044, 26); m1_poke(m, 0x4045, 28); m1_poke(m, 0x4046, 10);
+	}
 	for (int i = 5; i < argc; i++) { type(argv[i]); fields(120); }
+	printf("clock set at field %d\n", set_at);
+	printf("4040-4046:"); for (int a = 0x4040; a <= 0x4046; a++) printf(" %d", m1_peek(m, (uint16_t)a)); puts("");
 	show();
 	printf("ei %d, %.1f s, %u image errors\n", m1_has_ei(m), m1_cycles(m) / (double)M1_CLOCK_HZ, (unsigned)m1_fdc(m)->errors);
 	return 0;
