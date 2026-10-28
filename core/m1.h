@@ -34,6 +34,14 @@ fdc_t   *m1_fdc(m1_t *m);			/* the drives: fdc_insert() and so on */
 bool     m1_has_ei(const m1_t *m);
 uint8_t  m1_peek(const m1_t *m, uint16_t a);	/* RAM and video, without side effects */
 void     m1_poke(m1_t *m, uint16_t a, uint8_t v);
+/* Sound: the cassette output (port FF, bits 0-1), which games drive as a
+   speaker. Each sample is the level averaged over the guest cycles it covers,
+   with a DC blocker after it. Samples come every num/den guest cycles (a
+   rational, so nothing drifts); m1_audio(m, 0, 0) turns it off. */
+#define M1_AUDIO_RING 4096
+void     m1_audio(m1_t *m, uint64_t num, uint64_t den);
+size_t   m1_audio_drain(m1_t *m, int16_t *dst, size_t max);	/* samples ready, oldest first */
+uint32_t m1_audio_dropped(const m1_t *m);	/* samples lost to a full ring */
 size_t   m1_size(void);			/* sizeof the machine, for a static buffer */
 
 #endif

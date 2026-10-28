@@ -13,6 +13,15 @@ struct m1 {
 	bool fdc_touched;		/* the EI was read or written: look at INT again */
 	uint64_t next_event;
 	uint8_t kbd[8];			/* row bits: a set bit is a key down */
+	/* sound */
+	uint64_t a_num, a_den;		/* guest cycles per sample, num/den; 0: off */
+	uint64_t a_at, a_rem, a_prev;	/* the next sample's boundary (and the fraction), the last one */
+	uint64_t a_last;		/* cycle of the last level change counted in a_acc */
+	int64_t a_acc;			/* level x cycles since a_prev */
+	int8_t a_level;			/* -1, 0, +1 */
+	int32_t a_x1, a_y1;		/* the DC blocker */
+	int16_t a_ring[M1_AUDIO_RING];
+	uint32_t a_head, a_tail, a_dropped;
 	fdc_t fdc;
 	uint8_t mem[0x10000];		/* the whole address space: ROM, video, RAM */
 };
@@ -67,8 +76,70 @@ static inline void mem_write(m1_t *m, uint16_t a, uint8_t v)
 
 static uint8_t sz_rd(void *u, uint16_t a) { return mem_read((m1_t *)u, a); }
 static void sz_wr(void *u, uint16_t a, uint8_t v) { mem_write((m1_t *)u, a, v); }
+#define A_GAIN 7000			/* a full-scale level, out of 32767 */
+
+/* every sample whose boundary has passed, up to the cycle now */
+static void audio_advance(m1_t *m, uint64_t now)
+{
+	if (!m->a_num) return;
+	while (m->a_at <= now) {
+		m->a_acc += (int64_t)m->a_level * (int64_t)(m->a_at - m->a_last);
+		m->a_last = m->a_at;
+		uint64_t span = m->a_at - m->a_prev;
+		int32_t x = span ? (int32_t)(m->a_acc * A_GAIN / (int64_t)span) : 0;
+		/* DC blocker: y = x - x1 + 0.995 y1 (Q15), so a level left high or
+		   low settles to 0, the silence value */
+		int32_t y = x - m->a_x1 + (int32_t)(((int64_t)m->a_y1 * 32604) >> 15);
+		m->a_x1 = x; m->a_y1 = y;
+		if (y > 32767) y = 32767;
+		if (y < -32768) y = -32768;
+		uint32_t next = (m->a_head + 1) % M1_AUDIO_RING;
+		if (next != m->a_tail) { m->a_ring[m->a_head] = (int16_t)y; m->a_head = next; }
+		else m->a_dropped++;
+		m->a_acc = 0;
+		m->a_prev = m->a_at;
+		m->a_at += m->a_num / m->a_den;
+		m->a_rem += m->a_num % m->a_den;
+		if (m->a_rem >= m->a_den) { m->a_at++; m->a_rem -= m->a_den; }
+	}
+}
+
 static uint8_t sz_in(z80 *z, uint8_t p) { (void)z; (void)p; return 0xFF; }
-static void sz_out(z80 *z, uint8_t p, uint8_t v) { (void)z; (void)p; (void)v; }
+static void sz_out(z80 *z, uint8_t p, uint8_t v)
+{
+	m1_t *m = (m1_t *)z->userdata;
+	if (p != 0xFF) return;
+	/* the cassette output: 1 one way, 2 the other, 0 (and 3) nothing. The
+	   edge is stamped at the start of the writing instruction (m->cycles has
+	   not counted it yet): the same offset for every edge, so pitch is exact */
+	int8_t level = (v & 3) == 1 ? 1 : (v & 3) == 2 ? -1 : 0;
+#ifdef M1_EDGES
+	{ extern void m1_edge(uint64_t at, int level); m1_edge(m->cycles, level); }
+#endif
+	if (level == m->a_level || !m->a_num) { m->a_level = level; return; }
+	audio_advance(m, m->cycles);
+	m->a_acc += (int64_t)m->a_level * (int64_t)(m->cycles - m->a_last);
+	m->a_last = m->cycles;
+	m->a_level = level;
+}
+
+void m1_audio(m1_t *m, uint64_t num, uint64_t den)
+{
+	m->a_num = den ? num : 0; m->a_den = den ? den : 1;
+	m->a_prev = m->a_last = m->cycles;
+	m->a_at = m->cycles + (m->a_num / m->a_den); m->a_rem = m->a_num % m->a_den;
+	m->a_acc = 0; m->a_x1 = m->a_y1 = 0;
+	m->a_head = m->a_tail = 0;
+}
+
+size_t m1_audio_drain(m1_t *m, int16_t *dst, size_t max)
+{
+	size_t n = 0;
+	while (n < max && m->a_tail != m->a_head) { dst[n++] = m->a_ring[m->a_tail]; m->a_tail = (m->a_tail + 1) % M1_AUDIO_RING; }
+	return n;
+}
+
+uint32_t m1_audio_dropped(const m1_t *m) { return m->a_dropped; }
 
 void m1_init(m1_t *m, const uint8_t *rom, const disk_io_t *io)
 {
@@ -88,6 +159,7 @@ void m1_power_on(m1_t *m, int ram_kb)
 	m->int_line = false;
 	m->next_event = fdc_next_event(&m->fdc);
 	memset(m->kbd, 0, sizeof m->kbd);
+	m->a_level = 0;
 	z80_init(&m->cpu);
 	m->cpu.read_byte = sz_rd;
 	m->cpu.write_byte = sz_wr;
@@ -101,6 +173,9 @@ uint32_t m1_run(m1_t *m, uint32_t cycles)
 	uint32_t done = 0;
 	while (done < cycles) {
 		m->cpu.int_pending = m->int_line;	/* (level-sensitive: held until the latch is read) */
+#ifdef M1_PCHOOK
+		{ extern void m1_pchook(uint16_t pc, uint8_t a, uint8_t b, uint8_t c); m1_pchook(m->cpu.pc, m->cpu.a, m->cpu.b, m->cpu.c); }
+#endif
 		unsigned long before = m->cpu.cyc;
 		z80_step(&m->cpu);
 		uint32_t n = (uint32_t)(m->cpu.cyc - before);
@@ -113,6 +188,7 @@ uint32_t m1_run(m1_t *m, uint32_t cycles)
 			m->fdc_touched = false;
 		}
 	}
+	audio_advance(m, m->cycles);
 	return done;
 }
 

@@ -18,8 +18,10 @@
 #include "sha1.h"
 #include "picker.h"
 #include "dosclock.h"
+#include "sound.h"
+#include "hardware/clocks.h"
 
-#define VERSION "0.7"
+#define VERSION "0.8"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -437,10 +439,12 @@ int main(void)
 	if (m1_size() > sizeof machine) no_rom("Internal: the machine doesn't fit");
 	if (!load_rom(problem, sizeof problem)) no_rom(problem);
 	m1_init(m, rom, &disk_io);
+	sound_init();
+	m1_audio(m, (uint64_t)M1_CLOCK_HZ * 4096, clock_get_hz(clk_sys));	/* (a sample every 4096 host clocks) */
 	load_drives();
 	power_on();
 	set_title();
-	const char *help = "F1 power on  F2 leave  F3 F4 disks  F5 save screen  F6 keys";
+	const char *help = "F1 on  F2 leave  F3 F4 disks  F5 screen  F6 keys  F7 sound";
 	struct tm now_tm;
 	bool have_clock = now_local(&now_tm);
 	status(lproblem[0] ? lproblem : have_clock ? help : "The shell's clock isn't set: files undated, DOS clock left alone");
@@ -457,6 +461,7 @@ int main(void)
 			if (st == KEY_STATE_PRESSED && code == KEY_F1) { power_on(); continue; }
 			if (st == KEY_STATE_PRESSED && code == KEY_F2) { lcd_clear_screen(); picocalc_shell_exit(); continue; }
 			if (st == KEY_STATE_PRESSED && (code == KEY_F3 || code == KEY_F4)) {
+				sound_silence();
 				choose(code == KEY_F3 ? 0 : 1);
 				status(code == KEY_F3 ? "Drive 0 changed: F1 to start again from it" : help);
 				note = code == KEY_F3 ? 300 : 0;
@@ -464,7 +469,14 @@ int main(void)
 				continue;
 			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F5) { screenshot(); note = 180; continue; }
+			if (st == KEY_STATE_PRESSED && code == KEY_F7) {
+				sound_mute(!sound_muted());
+				status(sound_muted() ? "Sound off (F7 turns it on)" : "Sound on");
+				note = 180;
+				continue;
+			}
 			if (st == KEY_STATE_PRESSED && code == KEY_F6) {
+				sound_silence();
 				choose_layout();
 				status(lproblem[0] ? lproblem : help);
 				note = lproblem[0] ? 600 : 0;
@@ -478,6 +490,11 @@ int main(void)
 		m1_set_matrix(m, keys.matrix);
 
 		m1_run(m, FIELD_CYCLES);
+		{
+			static int16_t pcm[1024];
+			size_t n;
+			while ((n = m1_audio_drain(m, pcm, sizeof pcm / sizeof pcm[0]))) sound_put(pcm, n);
+		}
 		if (!dosclock.done) {
 			struct tm tm;
 			if (!now_local(&tm)) dosclock.done = true;
@@ -492,11 +509,10 @@ int main(void)
 		present();
 		if (note && !--note) status(help);
 
-		/* pace on an absolute deadline, so a late field doesn't add up */
-		thirds += 2;
-		deadline = delayed_by_us(deadline, 16666 + thirds / 3);
-		thirds %= 3;
-		if (absolute_time_diff_us(get_absolute_time(), deadline) < -100000) deadline = get_absolute_time();
-		busy_wait_until(deadline);
+		/* Pace on the sound: the speakers take samples at a rate the PWM
+		   clock sets, so waiting for room keeps the Model I in step with
+		   them (and with real time) by construction. Two fields queued. */
+		while (sound_queued() > 2 * 610) tight_loop_contents();
+		(void)deadline; (void)thirds;
 	}
 }
