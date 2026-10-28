@@ -15,7 +15,7 @@
 #include "keys.h"
 #include "sha1.h"
 
-#define VERSION "0.1"
+#define VERSION "0.2"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18

@@ -66,6 +66,14 @@ int main(int argc, char **argv)
 	if (!has("HELLO, WORLD! 11 -1 #$%&'")) { puts("FAIL: symbols"); bad++; }
 	type("10 FOR I=1 TO 3:PRINT I*I;:NEXT\nRUN\n");
 	if (!has(" 1  4  9")) { puts("FAIL: a program"); bad++; }
+	/* the PicoCalc names a key by what it types at the moment: Shift let go
+	   first gives '(' down and '9' up, 'A' down and 'a' up */
+	keys_event(&k, 0xA2, true); keys_event(&k, '(', true); keys_event(&k, 0xA2, false); keys_event(&k, '9', false);
+	keys_event(&k, 0xA2, true); keys_event(&k, 'A', true); keys_event(&k, 0xA2, false); keys_event(&k, 'a', false);
+	fields(30);
+	for (int r = 0; r < 8; r++) if (k.matrix[r]) { printf("FAIL: stuck key, row %d %02x\n", r, k.matrix[r]); bad++; }
+	type("\n20 PRINT 1234567890\nRUN\n");
+	if (!has(" 1234567890")) { puts("FAIL: digits after shifted keys"); bad++; }
 	type("PRINT MEM\n");
 	char s[16][65];
 	screen(s);

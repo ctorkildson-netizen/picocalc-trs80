@@ -85,6 +85,7 @@ static void rebuild(keys_t *k)
 static uint8_t apply(keys_t *k, uint8_t code, bool down)
 {
 	if (code == PC_SHL || code == PC_SHR) { k->pc_shift = down; return 0; }
+	if (code >= 'a' && code <= 'z') code -= 32;	/* (one key, whichever case it came as) */
 	if (down) {
 		for (int i = 0; i < k->n_held; i++) if (k->held[i].code == code) return 0;	/* (already down) */
 		const key_bind_t *b = keys_lookup(code);
@@ -93,6 +94,7 @@ static uint8_t apply(keys_t *k, uint8_t code, bool down)
 		k->held[k->n_held].row = b->row;
 		k->held[k->n_held].col = b->col;
 		k->held[k->n_held].shift = b->shift;
+		k->held[k->n_held].with_shift = k->pc_shift;
 		k->n_held++;
 		return KEYS_HOLD;
 	}
@@ -101,7 +103,15 @@ static uint8_t apply(keys_t *k, uint8_t code, bool down)
 			k->held[i] = k->held[--k->n_held];
 			return KEYS_GAP;
 		}
-	return 0;
+	/* A release we never saw pressed: the PicoCalc names a key by what it
+	   types now, so a key pressed with Shift and let go after Shift comes up
+	   as another character ('(' down, '9' up). Let go of the keys that went
+	   down with Shift, which is where it must be. */
+	bool any = false;
+	for (int i = 0; i < k->n_held; )
+		if (k->held[i].with_shift) { k->held[i] = k->held[--k->n_held]; any = true; }
+		else i++;
+	return any ? KEYS_GAP : 0;
 }
 
 void keys_field(keys_t *k)

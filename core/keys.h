@@ -29,7 +29,7 @@ typedef struct {
 	struct { uint8_t code; bool down; } q[KEYS_QUEUE];
 	uint8_t head, tail;
 	uint8_t wait;			/* fields before the next queued event */
-	struct { uint8_t code, row, col, shift; } held[KEYS_HELD];
+	struct { uint8_t code, row, col, shift; bool with_shift; } held[KEYS_HELD];
 	uint8_t n_held;
 	bool pc_shift;			/* the PicoCalc's Shift, held */
 	uint32_t dropped;		/* events that didn't fit the queue */
