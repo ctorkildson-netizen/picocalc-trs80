@@ -401,7 +401,7 @@ static void choose(int d)
 	static const char *const help[] = { "  Del            empty the drive", NULL };
 	static const picker_style_t style = {
 		.title = "Choose a disk", .filter = is_disk, .noun = "disk", .nouns = "disks",
-		.keys = "\x7F\xD4", .keys_help = help,
+		.keys = "\x7F\xD4", .keys_help = help, .keys_footer = "Del: empty",
 	};
 	static char dir[PICKER_PATH] = "/trs80/disks";
 	char path[PICKER_PATH];
@@ -423,7 +423,7 @@ static void choose_layout(void)
 	static const char *const help[] = { "  Del            the usual keys", NULL };
 	static const picker_style_t style = {
 		.title = "Keys for a game", .filter = is_text, .noun = "layout", .nouns = "layouts",
-		.keys = "\x7F\xD4", .keys_help = help,
+		.keys = "\x7F\xD4", .keys_help = help, .keys_footer = "Del: usual",
 	};
 	static char dir[PICKER_PATH] = "/trs80/layouts";
 	char path[PICKER_PATH];
@@ -552,7 +552,9 @@ int main(void)
 	load_drives();
 	power_on();
 	set_title();
-	const char *help = "F1 on  F2 leave  F3 F4 disks  F5 screen  F6 keys  F7 sound  F8 set";
+#define HELP_LINE "F1 on  F2 exit  F3 F4 disks  F5 snap  F6 keys  F7 sound  F8 set"
+	_Static_assert(sizeof HELP_LINE - 1 <= 64, "the status line is 64 characters");
+	const char *help = HELP_LINE;
 	struct tm now_tm;
 	bool have_clock = now_local(&now_tm);
 	status(lproblem[0] ? lproblem : have_clock ? help : "The shell's clock isn't set: files undated, DOS clock left alone");
