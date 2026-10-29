@@ -1,8 +1,8 @@
 /* trs80 -- a TRS-80 Model I on the PicoCalc: Level II BASIC, the keyboard,
  * and the Expansion Interface's disk drives, with JV1 and DMK images on the
- * SD card. One core for now: the guest runs a 60 Hz field, the rows of the
- * screen that changed are drawn, the keyboard is read, and the loop waits for
- * the field's deadline. */
+ * SD card. One core: the guest runs a 60 Hz field, the rows of the screen
+ * that changed are drawn, the keyboard is read, and the sound queue sets the
+ * pace (the loop waits while enough sound is queued). */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -22,7 +22,7 @@
 #include "dosclock.h"
 #include "hardware/clocks.h"
 
-#define VERSION "0.11"
+#define VERSION "0.12"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
