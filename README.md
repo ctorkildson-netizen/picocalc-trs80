@@ -61,13 +61,15 @@ handy for a bug report.
 - Images in **JV1** format (the usual `.dsk`, 35 to 80 tracks, single
   sided) and **DMK** format, which keeps each track as the disk had it.
   They're read and written in place, so keep a copy of any you care about.
+  What the Model I writes reaches the card half a second after it stops
+  writing, and when F2 goes back to the shell: give it that moment before
+  switching off.
   (Writing to DMK images has been tried less than writing to JV1.)
 - The Expansion Interface is there when drive 0 has a disk at power-on (F1),
   as Level II waits for a disk when there's an Expansion Interface. With no
   disk in drive 0, it's a Model I without one.
 - NEWDOS/80 boots, and games run from it. When the shell's clock is set,
-  trs80 sets NEWDOS's clock and date from it as the DOS starts (shell v1.1
-  or later).
+  trs80 sets NEWDOS's clock and date from it as the DOS starts.
 - Files written to the card are dated from the shell's clock too.
 
 ## Sound
@@ -111,8 +113,7 @@ output, a timed boot, and the layout parser (which needs no ROM).
 
 The submodules: Blair Leduc's
 [picocalc-text-starter](https://github.com/BlairLeduc/picocalc-text-starter)
-drivers (version 0.16, with FAT32 fixes, from the `diamond-dev` branch of
-[a fork](https://github.com/ctorkildson-netizen/picocalc-text-starter)), his
+drivers (version 0.17, which reads the card with FatFs), his
 [shell](https://github.com/BlairLeduc/picocalc-shell) for the clock, and
 [picocalc-extras](https://github.com/ctorkildson-netizen/picocalc-extras)
 for the file list.

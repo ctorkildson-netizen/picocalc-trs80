@@ -16,15 +16,17 @@ set(CORE ${CMAKE_CURRENT_LIST_DIR}/core)
 set(TS ${CMAKE_CURRENT_LIST_DIR}/modules/picocalc-text-starter)
 set(DRV ${TS}/drivers)
 set(SHELL_INC ${CMAKE_CURRENT_LIST_DIR}/modules/picocalc-shell/include)
-if (NOT EXISTS ${DRV}/fat32.c)
+if (NOT EXISTS ${DRV}/filesystem.c)
     message(FATAL_ERROR "The submodules are missing: git submodule update --init")
 endif()
 include(${CMAKE_CURRENT_LIST_DIR}/modules/picocalc-extras/picker/picker.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/modules/picocalc-extras/fatfs/fatfs.cmake)
+picocalc_fatfs(${TS})		# the SD card, with FatFs
 
 add_executable(trs80
     port/main.c port/sound.c
     ${CORE}/m1.c ${CORE}/sz_z80.c ${CORE}/keys.c ${CORE}/sha1.c ${CORE}/fdc.c ${CORE}/dosclock.c
-    ${DRV}/fat32.c ${DRV}/sdcard.c ${DRV}/font-5x10.c ${DRV}/font-8x10.c
+    ${DRV}/font-5x10.c ${DRV}/font-8x10.c
     ${DRV}/keyboard.c ${DRV}/lcd.c ${DRV}/southbridge.c)
 target_compile_definitions(trs80 PRIVATE M1_CPU_SZ)
 # (warnings for this project's own code; the drivers have a few of their own)
@@ -34,6 +36,6 @@ target_include_directories(trs80 PRIVATE ${CORE} ${TS} ${DRV} ${SHELL_INC})
 pico_set_program_name(trs80 "trs80")
 pico_enable_stdio_uart(trs80 0)
 pico_enable_stdio_usb(trs80 0)
-target_link_libraries(trs80 picocalc_picker pico_stdlib hardware_gpio hardware_i2c
+target_link_libraries(trs80 picocalc_picker picocalc_fs pico_stdlib hardware_gpio hardware_i2c
     hardware_spi hardware_pio hardware_powman hardware_pwm hardware_dma)
 pico_add_extra_outputs(trs80)

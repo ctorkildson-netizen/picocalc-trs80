@@ -12,7 +12,7 @@
 #include "drivers/font.h"
 #include "drivers/southbridge.h"
 #include "drivers/keyboard.h"
-#include "drivers/fat32.h"
+#include "drivers/filesystem.h"
 #include "picocalc_shell.h"
 #include "m1.h"
 #include "keys.h"
@@ -22,7 +22,7 @@
 #include "dosclock.h"
 #include "hardware/clocks.h"
 
-#define VERSION "0.12"
+#define VERSION "0.13"
 #define FIELD_CYCLES (M1_CLOCK_HZ / 60)
 #define CELL_W 5
 #define CELL_H 18
@@ -54,11 +54,11 @@ static const struct { const char *sha1, *name; } known[] = {
 
 static bool read_file(const char *path, uint8_t *buf, size_t want)
 {
-	fat32_file_t f;
-	if (fat32_open(&f, path) != FAT32_OK) return false;
-	size_t got = 0;
-	bool ok = fat32_read(&f, buf, want, &got) == FAT32_OK && got == want;
-	fat32_close(&f);
+	FIL f;
+	if (f_open(&f, path, FA_READ) != FR_OK) return false;
+	UINT got = 0;
+	bool ok = f_read(&f, buf, (UINT)want, &got) == FR_OK && got == want;
+	f_close(&f);
 	return ok;
 }
 
@@ -174,13 +174,14 @@ static void status(const char *s)
 /* F5: the Model I's screen as text, /screenshots/trs80-NNN.txt */
 static void screenshot(void)
 {
-	fat32_file_t f;
+	FIL f;
 	char path[48];
-	if (fat32_dir_create(&f, "/screenshots") == FAT32_OK) fat32_close(&f);
+	f_mkdir("/screenshots");			/* (FR_EXIST if it's there) */
 	for (int n = 1; n < 1000; n++) {
 		snprintf(path, sizeof path, "/screenshots/trs80-%03d.txt", n);
-		if (fat32_open(&f, path) == FAT32_OK) { fat32_close(&f); continue; }
-		if (fat32_create(&f, path) != FAT32_OK) break;
+		FRESULT fr = f_open(&f, path, FA_WRITE | FA_CREATE_NEW);
+		if (fr == FR_EXIST) continue;
+		if (fr != FR_OK) break;
 		const uint8_t *v = m1_vram(m);
 		for (int r = 0; r < M1_ROWS; r++) {
 			char l[M1_COLS + 3];
@@ -191,10 +192,10 @@ static void screenshot(void)
 			}
 			while (k > 0 && l[k - 1] == ' ') k--;
 			l[k++] = '\r', l[k++] = '\n';
-			size_t put;
-			fat32_write(&f, l, (size_t)k, &put);
+			UINT put;
+			f_write(&f, l, (UINT)k, &put);
 		}
-		fat32_close(&f);
+		f_close(&f);
 		char b[64];
 		snprintf(b, sizeof b, "Saved %s", path + 13);
 		status(b);
@@ -208,42 +209,66 @@ static void screenshot(void)
 #define DRIVES 2			/* drives the menu offers (the controller has 4) */
 #define SETTINGS_FILE "/trs80/settings.txt"
 #define OLD_SETTINGS "/trs80/drives.txt"	/* (0.3-0.10 kept them here) */
-static fat32_file_t dfile[FDC_DRIVES];
+static FIL dfile[FDC_DRIVES];
+static bool dopen[FDC_DRIVES];
 static char dpath[FDC_DRIVES][PICKER_PATH];
+/* FatFs keeps what's written in memory until the file is synced: a disk
+   is synced when the Model I has stopped writing to it for half a second
+   (counted in fields), and before going back to the shell */
+#define SYNC_FIELDS 30
+static int dsync[FDC_DRIVES];
 
 static bool d_read(void *c, int d, uint32_t off, void *buf, uint32_t len)
 {
 	(void)c;
-	size_t got = 0;
-	return dfile[d].is_open && fat32_seek(&dfile[d], off) == FAT32_OK &&
-	       fat32_read(&dfile[d], buf, len, &got) == FAT32_OK && got == len;
+	UINT got = 0;
+	return dopen[d] && f_lseek(&dfile[d], off) == FR_OK &&
+	       f_read(&dfile[d], buf, len, &got) == FR_OK && got == len;
 }
 
 static bool d_write(void *c, int d, uint32_t off, const void *buf, uint32_t len)
 {
 	(void)c;
-	size_t put = 0;
-	return dfile[d].is_open && fat32_seek(&dfile[d], off) == FAT32_OK &&
-	       fat32_write(&dfile[d], buf, len, &put) == FAT32_OK && put == len;
+	UINT put = 0;
+	bool ok = dopen[d] && f_lseek(&dfile[d], off) == FR_OK &&
+	          f_write(&dfile[d], buf, len, &put) == FR_OK && put == len;
+	if (dopen[d]) dsync[d] = SYNC_FIELDS;
+	return ok;
+}
+
+/* once a field: sync a disk the Model I has finished writing to; all of
+   them at once if now */
+static void sync_disks(bool now)
+{
+	for (int d = 0; d < FDC_DRIVES; d++)
+		if (dsync[d] && (now || !--dsync[d])) {
+			dsync[d] = 0;
+			if (dopen[d]) f_sync(&dfile[d]);
+		}
 }
 static const disk_io_t disk_io = { d_read, d_write, NULL };
 
 static void eject(int d)
 {
 	fdc_eject(m1_fdc(m), d);
-	if (dfile[d].is_open) fat32_close(&dfile[d]);
+	if (dopen[d]) f_close(&dfile[d]);
+	dopen[d] = false;
+	dsync[d] = 0;
 	dpath[d][0] = 0;
 }
 
 static bool insert(int d, const char *path)
 {
 	eject(d);
-	if (fat32_open(&dfile[d], path) != FAT32_OK) return false;
+	/* a read-only file is a protected disk (and so is one already open in
+	   the other drive, as FatFs won't open a file twice for writing) */
+	bool wp = f_open(&dfile[d], path, FA_READ | FA_WRITE) != FR_OK;
+	if (wp && f_open(&dfile[d], path, FA_READ) != FR_OK) return false;
+	dopen[d] = true;
 	uint8_t h[16] = { 0 };
-	size_t got = 0;
-	fat32_read(&dfile[d], h, 16, &got);
-	bool wp = (dfile[d].attributes & 0x01) != 0;		/* a read-only file is a protected disk */
-	if (!fdc_insert(m1_fdc(m), d, fat32_size(&dfile[d]), h, wp)) { fat32_close(&dfile[d]); return false; }
+	UINT got = 0;
+	f_read(&dfile[d], h, 16, &got);
+	if (!fdc_insert(m1_fdc(m), d, (uint32_t)f_size(&dfile[d]), h, wp)) { f_close(&dfile[d]); dopen[d] = false; return false; }
 	snprintf(dpath[d], sizeof dpath[d], "%s", path);
 	return true;
 }
@@ -258,11 +283,11 @@ static bool use_layout(const char *path)
 	static char text[2048];
 	static key_bind_t b[KEYS_LAYOUT];
 	lproblem[0] = 0;
-	fat32_file_t f;
-	if (fat32_open(&f, path) != FAT32_OK) { snprintf(lproblem, sizeof lproblem, "Can't open %.40s", path); return false; }
-	size_t n = 0;
-	fat32_read(&f, text, sizeof text - 1, &n);
-	fat32_close(&f);
+	FIL f;
+	if (f_open(&f, path, FA_READ) != FR_OK) { snprintf(lproblem, sizeof lproblem, "Can't open %.40s", path); return false; }
+	UINT n = 0;
+	f_read(&f, text, sizeof text - 1, &n);
+	f_close(&f);
 	text[n] = 0;
 	int r = keys_parse_layout(text, b, KEYS_LAYOUT);
 	if (r < 0) { snprintf(lproblem, sizeof lproblem, "%.30s: line %d is wrong, not used", base_name(path), -r); return false; }
@@ -277,12 +302,12 @@ static void no_layout(void) { keys_set_layout(&keys, NULL, 0); lpath[0] = 0; }
    "L /trs80/layouts/meteor.txt" for the keys */
 static void load_drives(void)
 {
-	fat32_file_t f;
-	if (fat32_open(&f, SETTINGS_FILE) != FAT32_OK && fat32_open(&f, OLD_SETTINGS) != FAT32_OK) return;
+	FIL f;
+	if (f_open(&f, SETTINGS_FILE, FA_READ) != FR_OK && f_open(&f, OLD_SETTINGS, FA_READ) != FR_OK) return;
 	char b[1024];
-	size_t n = 0;
-	fat32_read(&f, b, sizeof b - 1, &n);
-	fat32_close(&f);
+	UINT n = 0;
+	f_read(&f, b, sizeof b - 1, &n);
+	f_close(&f);
 	b[n] = 0;
 	for (char *l = strtok(b, "\r\n"); l; l = strtok(NULL, "\r\n"))
 		if (l[0] >= '0' && l[0] < '0' + DRIVES && l[1] == ' ') insert(l[0] - '0', l + 2);
@@ -300,13 +325,12 @@ static void save_drives(void)
 		if (dpath[d][0]) n += snprintf(b + n, sizeof b - (size_t)n, "%d %s\r\n", d, dpath[d]);
 	if (lpath[0]) n += snprintf(b + n, sizeof b - (size_t)n, "L %s\r\n", lpath);
 	n += snprintf(b + n, sizeof b - (size_t)n, "V %d\r\nM %d\r\nF %d\r\n", sound_get_volume(), ram_kb, use_cg ? 1 : 0);
-	fat32_delete(SETTINGS_FILE);
-	fat32_delete(OLD_SETTINGS);
-	fat32_file_t f;
-	if (fat32_create(&f, SETTINGS_FILE) != FAT32_OK) return;
-	size_t put;
-	fat32_write(&f, b, (size_t)n, &put);
-	fat32_close(&f);
+	f_unlink(OLD_SETTINGS);
+	FIL f;
+	if (f_open(&f, SETTINGS_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
+	UINT put;
+	f_write(&f, b, (UINT)n, &put);
+	f_close(&f);
 }
 
 static bool is_disk(const char *name)
@@ -383,9 +407,7 @@ static void power_on(void)
 static int pick(const picker_style_t *style, char *dir, const char *start, char *path)
 {
 	keyboard_set_background_poll(true);
-	fat32_file_t t;
-	if (fat32_open(&t, dir) == FAT32_OK) fat32_close(&t);
-	else strcpy(dir, "/");
+	if (strcmp(dir, "/") && f_stat(dir, NULL) != FR_OK) strcpy(dir, "/");
 	int r = picker_run(style, dir, start, path);
 	keyboard_set_background_poll(false);
 	while (keyboard_key_available()) keyboard_get_key();
@@ -434,26 +456,6 @@ static void choose_layout(void)
 	set_title();
 }
 
-/* the shell's clock, for dating the files trs80 writes (screenshots, the
-   drives file, and the disk images as the Model I writes to them) */
-static bool shell_clock(uint16_t *date, uint16_t *time)
-{
-#ifdef PICOCALC_SHELL_HAS_TIME
-	int64_t ms;
-	int offset;
-	if (!picocalc_shell_time(&ms, &offset)) return false;
-	time_t t = (time_t)(ms / 1000) + (time_t)offset * 60;
-	struct tm tm;
-	gmtime_r(&t, &tm);
-	if (tm.tm_year + 1900 < 1980 || tm.tm_year + 1900 > 2107) return false;
-	fat32_pack_time(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, date, time);
-	return true;
-#else
-	(void)date;
-	(void)time;
-	return false;
-#endif
-}
 
 /* F8: settings, and what the emulator found (for a report: F5 saves it) */
 static void settings_page(void)
@@ -513,12 +515,11 @@ static void settings_page(void)
 		else if (c == 'f' && have_cg) { use_cg = !use_cg; shadow_valid = false; }
 		else if (c == 's') sound_volume((sound_get_volume() + 1) % 4);
 		else if (c == KEY_F5) {
-			fat32_file_t f;
-			if (fat32_dir_create(&f, "/screenshots") == FAT32_OK) fat32_close(&f);
-			fat32_delete("/screenshots/trs80-settings.txt");
-			if (fat32_create(&f, "/screenshots/trs80-settings.txt") == FAT32_OK) {
-				for (int r = 0; r < n; r++) { size_t put; char b[70]; int k = snprintf(b, sizeof b, "%s\r\n", lines[r]); fat32_write(&f, b, (size_t)k, &put); }
-				fat32_close(&f);
+			FIL f;
+			f_mkdir("/screenshots");
+			if (f_open(&f, "/screenshots/trs80-settings.txt", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+				for (int r = 0; r < n; r++) { UINT put; char b[70]; int k = snprintf(b, sizeof b, "%s\r\n", lines[r]); f_write(&f, b, (UINT)k, &put); }
+				f_close(&f);
 				saved = true;
 			}
 			continue;
@@ -539,8 +540,7 @@ int main(void)
 	lcd_set_background(C_BG);
 	lcd_set_foreground(C_FG);
 	lcd_clear_screen();
-	fat32_init();
-	fat32_set_time_source(shell_clock);
+	fs_init();			/* (files are dated by the shell's clock) */
 	keyboard_init();
 
 	char problem[48];
@@ -569,7 +569,7 @@ int main(void)
 			if (!k) break;
 			uint8_t st = k >> 8, code = k & 0xFF;
 			if (st == KEY_STATE_PRESSED && code == KEY_F1) { power_on(); continue; }
-			if (st == KEY_STATE_PRESSED && code == KEY_F2) { lcd_clear_screen(); picocalc_shell_exit(); continue; }
+			if (st == KEY_STATE_PRESSED && code == KEY_F2) { sync_disks(true); lcd_clear_screen(); picocalc_shell_exit(); continue; }
 			if (st == KEY_STATE_PRESSED && (code == KEY_F3 || code == KEY_F4)) {
 				sound_silence();
 				choose(code == KEY_F3 ? 0 : 1);
@@ -611,6 +611,7 @@ int main(void)
 		m1_set_matrix(m, keys.matrix);
 
 		m1_run(m, FIELD_CYCLES);
+		sync_disks(false);
 		{
 			static int16_t pcm[1024];
 			size_t n;
